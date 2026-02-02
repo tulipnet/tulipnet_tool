@@ -1,0 +1,8 @@
+*.o
+cbd
+.vscode/
+output/
+core.*
+*.e
+input/
+**/.DS_Store

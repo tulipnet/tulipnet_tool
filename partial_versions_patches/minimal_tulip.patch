@@ -1,0 +1,952 @@
+diff --git a/Makefile b/Makefile
+index 9ce3332..6b4a4ea 100644
+--- a/Makefile
++++ b/Makefile
+@@ -35,15 +35,14 @@ submodules-clone:
+ 	git submodule update -f
+ 
+ install:
+-	sudo install ./cbd /usr/local/bin/cbd_ablated_default_seed
+-	sudo install ./cbd-iterative /usr/local/bin/cbd-iterative_ablated_default_seed
++	sudo install ./cbd /usr/local/bin/cbd
++	sudo install ./cbd-iterative /usr/local/bin/cbd-iterative
+ 	sudo mkdir -p /usr/local/lib/cbd/
+ 	sudo install -m 0755 ./scripts/delete_trivial_adversarial_sequences.sh /usr/local/lib/cbd/delete_trivial_adversarial_sequences.sh
+ 	sudo install -m 0755 ./scripts/reduce_generated_inputs_for_oracle.sh /usr/local/lib/cbd/reduce_generated_inputs_for_oracle.sh
+ 	sudo install -m 0755 ./scripts/generate_sha256sums_of_generated_concrete_values.sh /usr/local/lib/cbd/generate_sha256sums_of_generated_concrete_values.sh
+-	sudo install -m 0755 ./scripts/input_sanitizer.sh /usr/local/lib/cbd/input_sanitizer.sh
+ 
+ doc:
+ 	rm -rf html/ latex/ doc.html
+ 	doxygen doxygen.conf
+-	ln -s html/index.html doc.html
++	ln -s html/index.html doc.html
+\ No newline at end of file
+diff --git a/cbd-iterative b/cbd-iterative
+index f37ae30..fb0f767 100755
+--- a/cbd-iterative
++++ b/cbd-iterative
+@@ -10,7 +10,7 @@ usage()
+ 
+ log()
+ {
+-    echo -e "\033[1;33m[CBD-iterative ABLATED with DEFAULT SEED]\033[0m $1"
++    echo -e "\033[1;33m[CBD-iterative]\033[0m $1"
+ }
+ 
+ copy_seeds()
+@@ -193,13 +193,14 @@ cbd_iterative_function()
+             CBD_ARGS_ITERATION_0=$CBD_ARGS
+         fi
+ 
+-        cbd_ablated_default_seed $CBD_ARGS_ITERATION_0
++        cbd $CBD_ARGS_ITERATION_0
+ 
+         mv output cbd_output_iteration_0
+ 
+-        log "First iteration : Linking seeds"
++        log "First iteration : Linking seeds and wildcards"
+ 
+         copy_seeds cbd_output_iteration_0
++        link_wildcards cbd_output_iteration_0
+ 
+         I=1
+ 
+@@ -211,12 +212,13 @@ cbd_iterative_function()
+ 
+             export CBD_ALREADY_TREATED_CONCRETE_INPUTS_SHA256_SUMS_PATH=cbd_output_iteration_$((I - 1))/__sha256_sums__
+ 
+-            cbd_ablated_default_seed $CBD_ARGS_FOR_THIS_ITERATION
++            cbd $CBD_ARGS_FOR_THIS_ITERATION
+ 
+-            log "Iteration $I : Linking seeds"
++            log "Iteration $I : Linking seeds and wildcards"
+ 
+             mv output cbd_output_iteration_$I
+             copy_seeds cbd_output_iteration_$I
++            link_wildcards cbd_output_iteration_$I
+         done
+     else
+         echo "ERROR : The Number of iteration < 0 (Value : $NB_ITERATIONS)"
+diff --git a/ext/cslprocess_v2 b/ext/cslprocess_v2
+index bc063e3..4f1d872 160000
+--- a/ext/cslprocess_v2
++++ b/ext/cslprocess_v2
+@@ -1 +1 @@
+-Subproject commit bc063e368999a78e69a6f69174ac380aa72d0b5c
++Subproject commit 4f1d8720ec006bf95eab625ebf6675b0b7ef64ff
+diff --git a/include/input_generation_sessions/fuzzing_input_generation_session.hpp b/include/input_generation_sessions/fuzzing_input_generation_session.hpp
+index c408853..f34d55d 100644
+--- a/include/input_generation_sessions/fuzzing_input_generation_session.hpp
++++ b/include/input_generation_sessions/fuzzing_input_generation_session.hpp
+@@ -70,7 +70,7 @@ class FuzzingInputGenerationSession : public InputGenerationSession
+         virtual bool wasAlreadyExecuted() const override;
+         virtual bool isFinished() const override;
+ 
+-        bool mergeProducedSeeds() const;
++        bool applyWildcardsOfResultsOfFinishedFuzzingRuns() const;
+ 
+         ~FuzzingInputGenerationSession();
+ };
+diff --git a/include/inputs/generated_inputs_manager.hpp b/include/inputs/generated_inputs_manager.hpp
+index 3cec6b4..3879af8 100644
+--- a/include/inputs/generated_inputs_manager.hpp
++++ b/include/inputs/generated_inputs_manager.hpp
+@@ -39,6 +39,8 @@ class GeneratedInputsManager
+         static void staticInitialization();
+ 
+         void buildInputIdWithInputFilename();
++        void buildPrecedencesToInputsIds();
++        void buildConcretizedPrecedences();
+ 
+     public:
+         // Default constructor, should be used only in stage 0
+@@ -52,7 +54,9 @@ class GeneratedInputsManager
+         void generateWildcardFilesForThisDepth();
+         std::vector<std::string> getAllWildcardedAdversarialSequencesFilenames();
+         std::vector<std::string> getAllStaticAdversarialSequencesFilenames();
+-        std::vector<std::vector<std::string>> dispatchWildcardsFilenamesOnNCPUs(std::size_t cpus);
++        std::set<helpers::OrderedRelation<int>> getAllOrderedRelationsOfWildcardedAdversarialSequences();
++        std::map<helpers::OrderedRelation<int>, std::vector<std::string>> getAllWildcardedAdversarialSequencesFilenamesGroupedByAtMostNPrecedences(int n);
++        std::vector<std::vector<std::string>> dispatchWildcardsFilenamesOnNCPUs(int numberOfPrecedences, std::size_t cpus);
+ };
+ 
+ }
+diff --git a/include/kernel/cbd_instance.hpp b/include/kernel/cbd_instance.hpp
+index dc1afc7..6451472 100644
+--- a/include/kernel/cbd_instance.hpp
++++ b/include/kernel/cbd_instance.hpp
+@@ -74,17 +74,18 @@ class CBDInstance
+         helpers::time::Timer timer;
+         bool bestEffortByTimeoutMode;
+         std::optional<std::string> initialSeedsPath;
++        std::optional<std::string> gotWildcardsPath;
+         std::optional<int> iterationNumber;
+         std::optional<bool> iterativeModeStrategiesBalancingMode;
+ 
+         static void checkRelatedTools(std::string toolName, std::string toolPath);
+ 
+         CBDInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager);
+-        CBDInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, int _iterationNumber, bool _iterativeModeStrategiesBalancingMode);
++        CBDInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, std::string _gotWildcardsPath, int _iterationNumber, bool _iterativeModeStrategiesBalancingMode);
+ 
+     public:
+         static CBDInstance& initializeInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager);
+-        static CBDInstance& initializeInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, int _iterationNumber, bool _iterativeModeStrategiesBalancingMode);
++        static CBDInstance& initializeInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, std::string _gotWildcardsPath, int _iterationNumber, bool _iterativeModeStrategiesBalancingMode);
+         static CBDInstance& getInstance();
+ 
+         CBDInstance(CBDInstance& other) = delete;
+@@ -110,6 +111,7 @@ class CBDInstance
+         const helpers::time::Timer& getTimer() const;
+         bool bestEffortByTimeoutModeEnabled() const;
+         const std::string& getInitialSeedsPath() const;
++        const std::string& getGotWildcardsPath() const;
+         int getIterationNumber() const;
+         bool getIterativeModeStrategiesBalancingMode() const;
+ 
+diff --git a/include/kernel/cbd_options_manager.hpp b/include/kernel/cbd_options_manager.hpp
+index a925e27..394a16a 100644
+--- a/include/kernel/cbd_options_manager.hpp
++++ b/include/kernel/cbd_options_manager.hpp
+@@ -57,11 +57,13 @@ class CBDOptionsManager
+             FUZZING_MODE_STANDARD_ONLY = 'S',
+             SUPPOSED_THAT_AFL_SYSTEM_OPTIMIZATIONS_ARE_ALREADY_ENABLED = 'd',
+             FUZZING_OPTION_TEXT_ONLY = 't',
++            CUSTOM_FUZZING_TIME_PER_FUZZING_SESSION = 'T',
+             ORACLE_TESTING_AFTER_EACH_STAGE = 'o',
+             BEST_EFFORT_BY_TIMEOUT = 'B',
+             ITERATIVE_MODE = 'i',
+             ITERATIVE_MODE_STRATEGIES_BALANCING = 'e',
+             DISCARD_TRIVIAL_ADVERSARIAL_SEQUENCES = 'D',
++            ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE = 'p',
+             REMOVE_ALTREADY_TREATED_CONCRETE_INPUTS_BEFORE_ORACLE = 'r'
+         };
+ 
+diff --git a/include/kernel/constants.hpp b/include/kernel/constants.hpp
+index 2db97b9..66e5677 100644
+--- a/include/kernel/constants.hpp
++++ b/include/kernel/constants.hpp
+@@ -14,7 +14,7 @@
+ #define OUTPUT_DIR_SYSCALL_MONITOR                                           OUTPUT_DIR "/syscall_monitor"
+ #define OUTPUT_DIR_NEXT_COMMAND_SEQUENCES                                    OUTPUT_DIR "/next_command_sequences"
+ #define OUTPUT_DIR_POTENTIAL_BACKDOORS                                       OUTPUT_DIR "/potential_backdoors"
+-#define OUTPUT_DIR_APPLY_WILDCARD                                            OUTPUT_DIR "/merged_seeds"
++#define OUTPUT_DIR_APPLY_WILDCARD                                            OUTPUT_DIR "/apply_wildcard"
+ #define OUTPUT_DIR_INITIAL_SEEDS                                             OUTPUT_DIR "/seeds"
+ #define OUTPUT_DIR_GENERATED_WILDCARDS                                       OUTPUT_DIR "/wildcards"
+ #define CSLPROCESS_V2_EXECUTABLE_PATH                                        "/usr/local/bin/cslprocess"
+diff --git a/scripts/input_sanitizer.sh b/scripts/input_sanitizer.sh
+deleted file mode 100755
+index 9b893b9..0000000
+--- a/scripts/input_sanitizer.sh
++++ /dev/null
+@@ -1,6 +0,0 @@
+-#!/bin/bash
+-
+-INPUT="$1"
+-OUTPUT="$2"
+-
+-cat "$INPUT" | tr "\0" "\n" > "$OUTPUT"
+\ No newline at end of file
+diff --git a/src/cbd.cpp b/src/cbd.cpp
+index 021f4ff..ef26954 100644
+--- a/src/cbd.cpp
++++ b/src/cbd.cpp
+@@ -105,10 +105,12 @@ int main(int argc, char** argv)
+     bool supposeThatAFLSystemOptimizationsAreAlreadyEnabled;
+     kernel::CBDOptionsManager* optionsManager = nullptr;
+     oracle::CBDOracle* oracle;
++    bool customFuzzingTimePerFuzzingSession;
+     std::vector<float> timeToFuzz;
+     std::vector<std::string> timeToFuzzAsStingSplit;
+     float timeToFuzzFloat;
+     std::size_t j;
++    bool executeOracleAfterEachStage;
+     bool bestEffortByTimeoutModeEnabled;
+     struct sigaction sigactionSIGTERM;
+     std::optional<int> bestEffortByTimeoutModeTimeout = std::nullopt;
+@@ -131,8 +133,6 @@ int main(int argc, char** argv)
+ 
+     #endif
+ 
+-    std::cout << helpers::display::Colors::YELLOW_BOLD << "WARNING : " << helpers::display::Colors::NEUTRAL << "Ablated version of CBD" << helpers::display::Colors::MAGENTA_BOLD << " with default seed" << std::endl;
+-
+     if (argc < 6)
+     {
+         usage();
+@@ -156,6 +156,8 @@ int main(int argc, char** argv)
+         numberOfConcurrentThreadsAsString = std::string(argv[5 + argvShift]);
+ 
+         supposeThatAFLSystemOptimizationsAreAlreadyEnabled = optionsManager->isDefined(kernel::CBDOptionsManager::Options::SUPPOSED_THAT_AFL_SYSTEM_OPTIMIZATIONS_ARE_ALREADY_ENABLED);
++        customFuzzingTimePerFuzzingSession = optionsManager->isDefined(kernel::CBDOptionsManager::Options::CUSTOM_FUZZING_TIME_PER_FUZZING_SESSION);
++        executeOracleAfterEachStage = optionsManager->isDefined(kernel::CBDOptionsManager::Options::ORACLE_TESTING_AFTER_EACH_STAGE);
+         bestEffortByTimeoutModeEnabled = optionsManager->isDefined(kernel::CBDOptionsManager::Options::BEST_EFFORT_BY_TIMEOUT);
+ 
+         if (optionsManager->isDefined(kernel::CBDOptionsManager::Options::ITERATIVE_MODE) == true)
+@@ -227,11 +229,16 @@ int main(int argc, char** argv)
+             timeoutWatcher->run();
+         }
+ 
+-        if (result == 0)
++        if ((result == 0) && (customFuzzingTimePerFuzzingSession == true))
+         {
+             timeToFuzzAsStingSplit = helpers::string::split(timeToFuzzAsSting, ',');
+             j = 0;
+ 
++            if ((bestEffortByTimeoutModeEnabled == false) && (timeToFuzzAsStingSplit.size() != (std::size_t)maxCommandSequencesDepth))
++            {
++                std::cout << helpers::display::Colors::RED_BOLD << "ERROR : The depth of the command sequences is not the same as the number of provided fuzzing times" << helpers::display::Colors::NEUTRAL << std::endl;
++            }
++
+             totalTimeTookByFuzzingSessions = 0;
+ 
+             while ((result == 0) && (j < timeToFuzzAsStingSplit.size()))
+@@ -307,6 +314,7 @@ int main(int argc, char** argv)
+                     numberOfConcurrentThreads,
+                     optionsManager,
+                     initialSeedsPath,
++                    gotWildcardsPath,
+                     iterationNumber,
+                     iterativeModeStrategiesBalancingMode.value()
+                 );
+@@ -332,16 +340,90 @@ int main(int argc, char** argv)
+                 globalCurrentStage->runStage();
+ 
+                 internalState = kernel::CBDState::IDLE;
++            }
++
++            i = 1;
++
++            while (((bestEffortByTimeoutModeEnabled == true) && (finishCBDRun == false)) || ((i < maxCommandSequencesDepth) && (finishCBDRun == false)))
++            {
++                if ((executeOracleAfterEachStage == true) && ((i < maxCommandSequencesDepth) || (bestEffortByTimeoutModeEnabled == true)))
++                {
++                    oracle = new oracle::CBDOracle(*globalCurrentStage, globalCurrentStage->getGeneratedSequencesPath(), "generated_" + std::to_string(globalCurrentStage->getStageNumber()), alreadyProcessedByOracleSHA256SumsOfConcreteInputsFilePath);
++
++                    internalState = kernel::CBDState::ORACLE;
++
++                    oracle->runOracle();
++
++                    internalState = kernel::CBDState::IDLE;
++
++                    if (finishCBDRun == false)
++                    {
++                        globalCurrentStage = new stage::CBDStage(*((stage::CBDStage*)globalCurrentStage), i, oracle->getRelatedAdversarialSequencesIdsInRelatedStageThatCorrespondToFoundBackdoors());
++                    }
++
++                    delete oracle;
++                }
++                else if (finishCBDRun == false)
++                {
++                    globalCurrentStage = new stage::CBDStage(*((stage::CBDStage*)globalCurrentStage), i);
++
++                    if ((i == (maxCommandSequencesDepth - 1)) && (optionsManager->isDefined(kernel::CBDOptionsManager::Options::ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE) == true))
++                    {
++                        // TODO : Last stage static sequences oracle session
++                        oracle = new oracle::CBDOracle(*globalCurrentStage, globalCurrentStage->getStaticSequencesPath(), "static_" + std::to_string(globalCurrentStage->getStageNumber()), alreadyProcessedByOracleSHA256SumsOfConcreteInputsFilePath);
++
++                        oracleThread = std::thread([oracle] () {
++                            oracle->runOracle();
++
++                            delete oracle;
++                        });
++                    }
++                }
++
++                if ((bestEffortByTimeoutModeEnabled == true) && (finishCBDRun == false))
++                {
++                    printGlobalCBDMessage("Running cslprocess to manage deeper command sequences");
+ 
++                    kernel::CBDInstance::getInstance().increaseMaxSequenceDepthAndRerunCSLProcess();
++                }
++
++                if (finishCBDRun == false)
++                {
++                    internalState = kernel::CBDState::INPUT_GENERATION;
++
++                    globalCurrentStage->runStage();
++
++                    internalState = kernel::CBDState::IDLE;
++                }
++
++                ++i;
++            }
++
++            if (finishCBDRun == false)
++            {
+                 oracle = new oracle::CBDOracle(*globalCurrentStage, globalCurrentStage->getGeneratedSequencesPath(), "generated_" + std::to_string(globalCurrentStage->getStageNumber()), alreadyProcessedByOracleSHA256SumsOfConcreteInputsFilePath);
+ 
+                 internalState = kernel::CBDState::ORACLE;
+ 
+                 oracle->runOracle();
+ 
+-                internalState = kernel::CBDState::IDLE;
+-
+                 delete oracle;
++
++                if (optionsManager->isDefined(kernel::CBDOptionsManager::Options::ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE) == false)
++                {
++                    oracle = new oracle::CBDOracle(*globalCurrentStage, globalCurrentStage->getStaticSequencesPath(), "static_" + std::to_string(globalCurrentStage->getStageNumber()), alreadyProcessedByOracleSHA256SumsOfConcreteInputsFilePath);
++
++                    oracle->runOracle();
++
++                    internalState = kernel::CBDState::IDLE;
++
++                    delete oracle;
++                }
++            }
++
++            if (oracleThread != std::nullopt)
++            {
++                oracleThread->join();
+             }
+ 
+             printTimeTookByOracles(kernel::CBDInstance::getInstance().getTimer().getNumberOfElapsedSeconds(), totalTimeTookByFuzzingSessions);
+diff --git a/src/input_generation_sessions/afl_run/afl_run.cpp b/src/input_generation_sessions/afl_run/afl_run.cpp
+index 66aa337..13098f0 100644
+--- a/src/input_generation_sessions/afl_run/afl_run.cpp
++++ b/src/input_generation_sessions/afl_run/afl_run.cpp
+@@ -24,7 +24,7 @@ void AFLRun::generateAFLFuzzArgs()
+     {
+         this->aflFuzzArgs.push_back("--signal=SIGINT");
+         this->aflFuzzArgs.push_back(std::to_string(this->fuzzingTimeout.getTimeToFuzz()));
+-        this->aflFuzzArgs.push_back("/root/ablation_studies/aflpp_vanilla/afl-fuzz");
++        this->aflFuzzArgs.push_back("/usr/local/bin/afl-fuzz");
+     }
+     else if (this->fuzzingTimeout.getTimeoutMode() == FuzzingTimeoutMode::NULL_TIMEOUT)
+     {
+@@ -106,6 +106,7 @@ void AFLRun::generateEnvironment()
+     char* aflNoAffinity;
+ 
+     this->environment.insert(std::pair<std::string, std::string>("AFL_NO_UI", "1"));
++    this->environment.insert(std::pair<std::string, std::string>("WILDCARD_PATH", this->usedWildcardsPath));
+ 
+     cbdPreloadEnv = std::getenv(PRELOAD_ENV);
+ 
+diff --git a/src/input_generation_sessions/fuzzing_input_generation_session.cpp b/src/input_generation_sessions/fuzzing_input_generation_session.cpp
+index 595dc73..3428102 100644
+--- a/src/input_generation_sessions/fuzzing_input_generation_session.cpp
++++ b/src/input_generation_sessions/fuzzing_input_generation_session.cpp
+@@ -2,6 +2,7 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <functional>
++#include <map>
+ #include <optional>
+ #include <string>
+ #include <vector>
+@@ -9,7 +10,6 @@
+ #include "external_tools_runs/external_tools_runs.hpp"
+ #include "input_generation_sessions/fuzzing_input_generation_session.hpp"
+ #include "helpers/filesystem.hpp"
+-#include "helpers/runnables/bash_script_execution.hpp"
+ #include "helpers/string.hpp"
+ #include "helpers/vector.hpp"
+ #include "input_generation_sessions/afl_run/afl_run.hpp"
+@@ -58,8 +58,13 @@ void FuzzingInputGenerationSession::concretizeWildcards() const
+     std::string wildcardPrecedenceContent;
+     std::vector<std::string> wildcardPrecedenceAsStringVector;
+     std::vector<std::string> splitWildcardContent;
++    std::size_t i;
+     std::vector<std::vector<std::string>> cslSeedsAtomsForThisWildcard;
++    std::size_t j;
+     std::ofstream seedOfstream;
++    int seedId = 0;
++    std::size_t k;
++    std::string wildcardCoreID;
+ 
+     std::filesystem::create_directory(this->initialSeedsPath);
+ 
+@@ -68,11 +73,85 @@ void FuzzingInputGenerationSession::concretizeWildcards() const
+         currentGeneratedSeedPathForThisCore = this->initialSeedsPath + "/" + cpuWildcardsDirectory.path().filename().string();
+         std::filesystem::create_directory(currentGeneratedSeedPathForThisCore);
+ 
+-        std::ofstream seedStream = std::ofstream(currentGeneratedSeedPathForThisCore + "/default");
++        for (const std::filesystem::directory_entry& wildcardFile : std::filesystem::directory_iterator(cpuWildcardsDirectory))
++        {
++            if (std::filesystem::file_size(wildcardFile) > 0) // To prevent execution with empty files
++            {
++                if (this->getId() == 0)
++                {
++                    for (const std::filesystem::directory_entry& seedFile : std::filesystem::directory_iterator(CSLPROCESS_V2_SEEDS_DIR))
++                    {
++                        if (helpers::string::beginsWith(seedFile.path().filename().string(), wildcardFile.path().filename()) == true)
++                        {
++                            std::filesystem::copy_file(seedFile, currentGeneratedSeedPathForThisCore + "/" + seedFile.path().filename().string());
++                        }
++                    }
++                }
++                else
++                {
++                    // Soit le stage 1, et le wildcard ayant pour précédence 1-2-3. Il faut prendre le wildcard, et remplacer les commandes 2 et 3 par leurs seeds respectifs, trouvables dans csl/seeds_per_commands/.
++
++                    // Example : wid=12;depth=2;content=0-3;merged1id=277 => We want to keep the part "0-3" => [0, 3] in a std::vector<int>
++                    wildcardContent = helpers::filesystem::getFileContent(wildcardFile);
++                    wildcardPrecedence = helpers::string::split(wildcardFile.path().filename().string(), ';').at(2);
++                    wildcardPrecedenceContent = helpers::string::split(wildcardPrecedence, '=').at(1);
++                    wildcardPrecedenceAsStringVector = helpers::string::split(wildcardPrecedenceContent, '-');
++
++                    splitWildcardContent = helpers::string::split(wildcardContent, '\n');
++
++                    wildcardCoreID = wildcardFile.path().parent_path().filename().string();
++
++                    if (wildcardPrecedence.size() >= (std::size_t)this->getId())
++                    {
++                        j = 0;
++
++                        for (i = this->getId(); i < wildcardPrecedenceAsStringVector.size(); ++i)
++                        {
++                            cslSeedsAtomsForThisWildcard.push_back(std::vector<std::string>());
++
++                            for (const std::filesystem::directory_entry& cslSeedsPerCommandsIterator : std::filesystem::directory_iterator(CSLPROCESS_V2_SEEDS_PER_COMMANDS_DIR))
++                            {
++                                if (helpers::string::beginsWith(cslSeedsPerCommandsIterator.path().filename().string(), "cmd_id:" + wildcardPrecedenceAsStringVector.at(i)) == true)
++                                {
++                                    cslSeedsAtomsForThisWildcard.at(j).push_back(
++                                        helpers::filesystem::getFileContent(cslSeedsPerCommandsIterator.path())
++                                    );
++                                }
++                            }
++
++                            ++j;
++                        }
++                    }
++
++                    std::filesystem::create_directories(OUTPUT_DIR_INITIAL_SEEDS "/" + std::to_string(this->getId()) + "/" + wildcardCoreID);
++
++                    for (std::vector<std::string>& currentVector : cslSeedsAtomsForThisWildcard)
++                    {
++                        if (currentVector.size() > 0)
++                        {
++                            for (std::string& seed : currentVector)
++                            {
++                                seedOfstream = std::ofstream(OUTPUT_DIR_INITIAL_SEEDS "/" + std::to_string(this->getId()) + "/" + wildcardCoreID + "/" + wildcardFile.path().filename().string() + ";seedid=" + std::to_string(seedId));
++                                k = 0;
+ 
+-        seedStream << "aaaa";
++                                while ((k < (std::size_t)this->getId()) && (k < splitWildcardContent.size()))
++                                {
++                                    seedOfstream << splitWildcardContent.at(k) << "\n";
+ 
+-        seedStream.close();
++                                    ++k;
++                                }
++
++                                seedOfstream << seed << "\n" << std::endl;
++
++                                ++seedId;
++                            }
++                        }
++                    }
++
++                    cslSeedsAtomsForThisWildcard.clear();
++                }
++            }
++        }
+     }
+ }
+ 
+@@ -405,7 +484,7 @@ void FuzzingInputGenerationSession::generateWildcardsForThisSession()
+     {
+         this->generatedInputsManager->generateWildcardFilesForThisDepth();
+ 
+-        dispatchedWildcardsFilenamesByCPUs = generatedInputsManager->dispatchWildcardsFilenamesOnNCPUs(id);
++        dispatchedWildcardsFilenamesByCPUs = generatedInputsManager->dispatchWildcardsFilenamesOnNCPUs(id, numberOfConcurrentSessions);
+ 
+         // FIXME : À dégager dans le futur
+         wildcardsPath = helpers::filesystem::getDirectoryContent(this->generatedWildcardedAdversarialSequencePath);
+@@ -527,6 +606,12 @@ FuzzingInputGenerationSession::FuzzingInputGenerationSession(const stage::CBDSta
+             this->initialSeedsPath,
+             std::filesystem::copy_options::recursive
+         );
++
++        std::filesystem::copy(
++            this->relatedStage->getRelatedInstance().getGotWildcardsPath() + "/" + std::to_string(_relatedStage->getStageNumber()),
++            this->generatedWildcardedAdversarialSequencePath,
++            std::filesystem::copy_options::recursive
++        );
+     }
+     else
+     {
+@@ -575,7 +660,7 @@ bool FuzzingInputGenerationSession::isFinished() const
+     return this->finished;
+ }
+ 
+-bool FuzzingInputGenerationSession::mergeProducedSeeds() const
++bool FuzzingInputGenerationSession::applyWildcardsOfResultsOfFinishedFuzzingRuns() const
+ {
+     std::string reverseWildcardsPath = OUTPUT_DIR_APPLY_WILDCARD "/" + std::to_string(this->relatedStage->getStageNumber());
+     std::filesystem::path currentGeneratedInputPath;
+@@ -586,12 +671,10 @@ bool FuzzingInputGenerationSession::mergeProducedSeeds() const
+     std::string reversedWildcardPath;
+     std::string currentCoreIDFilename;
+     std::filesystem::path generatedInputsPath;
+-    std::string mergedSeedsPath = OUTPUT_DIR_APPLY_WILDCARD "/" + std::to_string(this->relatedStage->getStageNumber());
+-    std::filesystem::path destination;
+ 
+     if (this->isFinished() == true)
+     {
+-        std::filesystem::create_directory(mergedSeedsPath);
++        std::filesystem::create_directory(reverseWildcardsPath);
+ 
+         for (const std::filesystem::directory_entry& generatedInputsDirForThisCore : std::filesystem::directory_iterator(OUTPUT_DIR_FUZZING_RESULTS "/" + std::to_string(this->getId()))) // FIXME : Pas propre
+         {
+@@ -603,16 +686,22 @@ bool FuzzingInputGenerationSession::mergeProducedSeeds() const
+             {
+                 for (const std::filesystem::directory_entry& generatedInputPath : std::filesystem::directory_iterator(generatedInputsPath))
+                 {
+-                    if (generatedInputPath.path().filename() != ".state")
+-                    {
+-                        destination = mergedSeedsPath + "/" + generatedInputPath.path().filename().string() + "_" + currentCoreIDFilename;
++                    currentGeneratedInputPath = generatedInputPath.path();
++                    currentGeneratedInputParameters = afl_run::utils::getParametersFromAFLQueueFilename(currentGeneratedInputPath.filename().string());
+ 
+-                        std::filesystem::copy(generatedInputPath, destination);
++                    if (currentGeneratedInputParameters.count(wildcardParameterTagInGeneratedInputFilename) > 0)
++                    {
++                        currentGeneratedInputAssociatedWildcard = currentGeneratedInputParameters.at(wildcardParameterTagInGeneratedInputFilename);
++                        reversedWildcardPath = reverseWildcardsPath + "/" + generatedInputPath.path().filename().string();
+ 
+-                        helpers::runnables::BashScriptExecution bse = helpers::runnables::BashScriptExecution("/usr/local/lib/cbd/input_sanitizer.sh", "\"" + generatedInputPath.path().string() + "\" \"" + destination.string() + "\"");
++                        // TODO : Ici à remplir
++                        /*
++                        - Récupérer le chemin entier du wildcard (5.cmd -> ./out/wildcards/5.cmd (Exemple))
++                        - Reverse le wildcard dans le bon dossier (S'assurer de sa création au préalable)
++                        */
++                        currentWildcardPath = this->generatedWildcardedAdversarialSequencePath + "/" + currentCoreIDFilename + "/" + currentGeneratedInputAssociatedWildcard;
+ 
+-                        bse.run();
+-                        bse.wait();
++                        external_tools_runs::runApplyWildcard(currentWildcardPath, generatedInputPath.path().string(), reversedWildcardPath);
+                     }
+                 }
+             }
+diff --git a/src/inputs/generated_inputs_manager.cpp b/src/inputs/generated_inputs_manager.cpp
+index a32c4a2..b106cf5 100644
+--- a/src/inputs/generated_inputs_manager.cpp
++++ b/src/inputs/generated_inputs_manager.cpp
+@@ -3,14 +3,17 @@
+ #include <fstream>
+ #include <map>
+ #include <set>
++#include <sstream>
+ #include <string>
+ #include <utility>
+ #include <vector>
+ 
+ #include "inputs/generated_inputs_manager.hpp"
+ #include "helpers/filesystem.hpp"
++#include "helpers/map.hpp"
+ #include "helpers/ordered_relation.hpp"
+ #include "helpers/string.hpp"
++#include "helpers/vector.hpp"
+ #include "input_generation_sessions/afl_run/afl_run_utils.hpp"
+ #include "kernel/constants.hpp"
+ 
+@@ -92,6 +95,87 @@ void GeneratedInputsManager::buildInputIdWithInputFilename()
+     }
+ }
+ 
++void GeneratedInputsManager::buildPrecedencesToInputsIds()
++{
++    int currentId;
++    std::vector<int> associatedWildcardPrecedences;
++    helpers::OrderedRelation<int> associatedWildcardPrecedencesAsOrderedRelation;
++    std::string associatedWildcardFilename;
++
++    for (const std::pair<int, std::string> currentIdWithFilename : this->inputIdWithInputFilename)
++    {
++        currentId = currentIdWithFilename.first;
++
++        associatedWildcardFilename = input_generation_sessions::afl_run::utils::getParametersFromAFLQueueFilename(currentIdWithFilename.second).at(input_generation_sessions::afl_run::utils::getAFLQueueFilenameParameterKey(input_generation_sessions::afl_run::utils::AFLQueueFilenameParameter::WILDCARD));
++        associatedWildcardPrecedences = std::vector<int>(input_generation_sessions::afl_run::utils::getParametersFromWildcardFilename(associatedWildcardFilename).at(input_generation_sessions::afl_run::utils::getAWildcardFilenameParameterKey(input_generation_sessions::afl_run::utils::WildcardFilenameParameter::CONTENT)));
++        associatedWildcardPrecedencesAsOrderedRelation = helpers::OrderedRelation<int>(associatedWildcardPrecedences);
++
++        associatedWildcardPrecedencesAsOrderedRelation.keepOnlyNFirstElements(this->currentDepth); // We keep only the already fuzzed previous commands
++
++        if (helpers::map::constainsKey(this->precedenceWithRelatedInputIds, associatedWildcardPrecedencesAsOrderedRelation) == true)
++        {
++            this->precedenceWithRelatedInputIds.at(associatedWildcardPrecedencesAsOrderedRelation).push_back(currentId);
++        }
++        else
++        {
++            this->precedenceWithRelatedInputIds.insert(
++                std::pair<helpers::OrderedRelation<int>, std::vector<int>>(
++                    associatedWildcardPrecedencesAsOrderedRelation,
++                    std::vector<int>({currentId})
++                )
++            );
++        }
++    }
++}
++
++void GeneratedInputsManager::buildConcretizedPrecedences()
++{
++    std::string currentInputPath;
++    std::string currentInputContent;
++    std::vector<std::string> splittedCurrentInputContent;
++    std::size_t i;
++    std::stringstream currentPrecedenceConcretizedValueStream;
++
++    for (const std::pair<const helpers::OrderedRelation<int>, std::vector<int>>& precedencesToRelatedInputsIds : this->precedenceWithRelatedInputIds)
++    {
++        for (int currentInputId : precedencesToRelatedInputsIds.second)
++        {
++            currentInputPath = this->inputsPath + "/" + this->inputIdWithInputFilename.at(currentInputId);
++            currentInputContent = helpers::filesystem::getFileContent(currentInputPath);
++            splittedCurrentInputContent = helpers::string::split(currentInputContent, '\n');
++
++            currentPrecedenceConcretizedValueStream = std::stringstream();
++
++            if ((int)splittedCurrentInputContent.size() >= this->currentDepth)
++            {
++                for (i = 0; (int)i < this->currentDepth; ++i)
++                {
++                    currentPrecedenceConcretizedValueStream << splittedCurrentInputContent.at(i);
++
++                    if ((int)(i + 1) != this->currentDepth)
++                    {
++                        currentPrecedenceConcretizedValueStream << '\n';
++                    }
++                }
++            }
++
++            if (helpers::map::constainsKey(this->concretizedPrecedences, precedencesToRelatedInputsIds.first) == true)
++            {
++                this->concretizedPrecedences.at(precedencesToRelatedInputsIds.first).insert(currentPrecedenceConcretizedValueStream.str());
++            }
++            else
++            {
++                this->concretizedPrecedences.insert(
++                    std::pair<helpers::OrderedRelation<int>, std::set<std::string>>(
++                        precedencesToRelatedInputsIds.first,
++                        std::set<std::string>({currentPrecedenceConcretizedValueStream.str()})
++                    )
++                );
++            }
++        }
++    }
++}
++
+ GeneratedInputsManager::GeneratedInputsManager() :
+     currentDepth(0),
+     tag(std::nullopt)
+@@ -113,6 +197,8 @@ GeneratedInputsManager::GeneratedInputsManager(std::string _inputsPath, int _cur
+     staticInitialization();
+ 
+     this->buildInputIdWithInputFilename();
++    this->buildPrecedencesToInputsIds();
++    this->buildConcretizedPrecedences();
+ }
+ 
+ GeneratedInputsManager::GeneratedInputsManager(std::string _tag, std::string _inputsPath, int _currentDepth) :
+@@ -123,6 +209,8 @@ GeneratedInputsManager::GeneratedInputsManager(std::string _tag, std::string _in
+     staticInitialization();
+ 
+     this->buildInputIdWithInputFilename();
++    this->buildPrecedencesToInputsIds();
++    this->buildConcretizedPrecedences();
+ }
+ 
+ void GeneratedInputsManager::generateWildcardFilesForThisDepth()
+@@ -196,22 +284,124 @@ std::vector<std::string> GeneratedInputsManager::getAllStaticAdversarialSequence
+     return result;
+ }
+ 
+-std::vector<std::vector<std::string>> GeneratedInputsManager::dispatchWildcardsFilenamesOnNCPUs(std::size_t cpus)
++std::set<helpers::OrderedRelation<int>> GeneratedInputsManager::getAllOrderedRelationsOfWildcardedAdversarialSequences()
++{
++    return helpers::map::getAllKeys(wildcardedAdversarialSequencesPrecedencesToWildcardFilename);
++}
++
++std::map<helpers::OrderedRelation<int>, std::vector<std::string>> GeneratedInputsManager::getAllWildcardedAdversarialSequencesFilenamesGroupedByAtMostNPrecedences(int n)
++{
++    std::map<helpers::OrderedRelation<int>, std::vector<std::string>> result;
++    helpers::OrderedRelation<int> currentOrderedRelation;
++
++    for (const std::pair<const helpers::OrderedRelation<int>, std::string>& currentPair : wildcardedAdversarialSequencesPrecedencesToWildcardFilename)
++    {
++        currentOrderedRelation = currentPair.first.getThisWithOnlyNFirstElements(n);
++
++        if (helpers::map::constainsKey(result, currentOrderedRelation) == false)
++        {
++            result.insert(
++                std::pair<helpers::OrderedRelation<int>, std::vector<std::string>>(
++                    currentOrderedRelation,
++                    std::vector<std::string>(
++                        { currentPair.second }
++                    )
++                )
++            );
++        }
++        else
++        {
++            result.at(currentOrderedRelation).push_back(currentPair.second);
++        }
++    }
++
++    return result;
++}
++
++std::vector<std::vector<std::string>> GeneratedInputsManager::dispatchWildcardsFilenamesOnNCPUs(int numberOfPrecedences, std::size_t cpus)
+ {
+     std::vector<std::vector<std::string>> result;
+-    std::vector<std::string> adversarialSequences = this->getAllWildcardedAdversarialSequencesFilenames();
++    std::map<helpers::OrderedRelation<int>, std::vector<std::string>> map = this->getAllWildcardedAdversarialSequencesFilenamesGroupedByAtMostNPrecedences(numberOfPrecedences);
++    std::size_t mapSize = map.size();
+     std::size_t i;
+     std::size_t j = 0;
+     std::vector<std::string> currentVector;
+     helpers::OrderedRelation<int> currentId;
+ 
+-    for (i = 0; i < cpus; ++i)
++    if (cpus > mapSize)
+     {
+-        result.push_back(std::vector<std::string>());
++        for (i = mapSize; i < cpus; ++i)
++        {
++            if (map.size() > 0)
++            {
++                currentId = map.begin()->first;
+ 
+-        for (j = 0; j < (adversarialSequences.size() / cpus); ++j)
++                // FIXME : For now, we cut only by 2 vectors
++                for (j = 0; j < 2; ++j)
++                {
++                    currentVector = helpers::vector::getChunk(map.begin()->second, 2, j);
++
++                    result.push_back(currentVector);
++                }
++
++                map.extract(currentId);
++            }
++        }
++
++        for (const std::pair<const helpers::OrderedRelation<int>, std::vector<std::string>>& pair : map)
+         {
+-            result.at(i).push_back(adversarialSequences.at(j));
++            result.push_back(pair.second);
++        }
++    }
++    else if (cpus == mapSize)
++    {
++        for (const std::pair<const helpers::OrderedRelation<int>, std::vector<std::string>>& pair : map)
++        {
++            result.push_back(pair.second);
++        }
++    }
++    else
++    {
++        // Découpage bête et méchant
++        for (i = 0; i < cpus; ++i)
++        {
++            j = 0;
++
++            while ((j < mapSize / cpus) && (map.size() > 0))
++            {
++                currentId = map.begin()->first;
++
++                for (const std::string& currentStr : map.begin()->second)
++                {
++                    currentVector.push_back(currentStr);
++                }
++
++                map.extract(currentId);
++
++                ++j;
++            }
++
++            if (currentVector.size() > 0)
++            {
++                result.push_back(currentVector);
++                currentVector = std::vector<std::string>();
++            }
++        }
++
++        if (map.size() > 0)
++        {
++            for (const std::pair<const helpers::OrderedRelation<int>, std::vector<std::string>>& pair : map)
++            {
++                for (const std::string& val : pair.second)
++                {
++                    currentVector.push_back(val);
++                }
++            }
++
++            for (const std::string& val : currentVector)
++            {
++                result.at(result.size() - 1).push_back(val);
++            }
+         }
+     }
+ 
+diff --git a/src/kernel/cbd_instance.cpp b/src/kernel/cbd_instance.cpp
+index 48ac6e9..b60bf8a 100644
+--- a/src/kernel/cbd_instance.cpp
++++ b/src/kernel/cbd_instance.cpp
+@@ -93,6 +93,7 @@ CBDInstance::CBDInstance(std::string _cslFilePath, std::string _binaryToTestPath
+     numberOfConcurrentThreads(_numberOfConcurrentThreads),
+     optionsManager(_optionsManager),
+     initialSeedsPath(std::nullopt),
++    gotWildcardsPath(std::nullopt),
+     iterationNumber(std::nullopt),
+     iterativeModeStrategiesBalancingMode(std::nullopt)
+ {
+@@ -159,7 +160,7 @@ CBDInstance::CBDInstance(std::string _cslFilePath, std::string _binaryToTestPath
+     this->bestEffortByTimeoutMode = this->optionsManager->isDefined(CBDOptionsManager::Options::BEST_EFFORT_BY_TIMEOUT);
+ }
+ 
+-CBDInstance::CBDInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, int _iterationNumber, bool _iterativeModeStrategiesBalancingMode) :
++CBDInstance::CBDInstance(std::string _cslFilePath, std::string _binaryToTestPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToTestArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, std::string _gotWildcardsPath, int _iterationNumber,  bool _iterativeModeStrategiesBalancingMode) :
+     cslFilePath(_cslFilePath),
+     binaryToTestPathRadical(_binaryToTestPathRadical),
+     timeToFuzzAWildcard(_timeToFuzzAWildcard),
+@@ -169,6 +170,7 @@ CBDInstance::CBDInstance(std::string _cslFilePath, std::string _binaryToTestPath
+     numberOfConcurrentThreads(_numberOfConcurrentThreads),
+     optionsManager(_optionsManager),
+     initialSeedsPath(_initialSeedsPath),
++    gotWildcardsPath(_gotWildcardsPath),
+     iterationNumber(_iterationNumber),
+     iterativeModeStrategiesBalancingMode(_iterativeModeStrategiesBalancingMode)
+ {
+@@ -247,14 +249,14 @@ CBDInstance& CBDInstance::initializeInstance(std::string _cslFilePath, std::stri
+     return *instance;
+ }
+ 
+-CBDInstance& CBDInstance::initializeInstance(std::string _cslFilePath, std::string _binaryToFuzzPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToFuzzArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, int _iterationNumber,  bool _iterativeModeStrategiesBalancingMode)
++CBDInstance& CBDInstance::initializeInstance(std::string _cslFilePath, std::string _binaryToFuzzPathRadical, std::vector<float> _timeToFuzzAWildcard, int _maxSequencesDepth, std::string _initialFuzzingSeedsPath, std::vector<std::string> _binaryToFuzzArgs, int _numberOfConcurrentThreads, const CBDOptionsManager* _optionsManager, std::string _initialSeedsPath, std::string _gotWildcardsPath, int _iterationNumber,  bool _iterativeModeStrategiesBalancingMode)
+ {
+     if (instance != nullptr)
+     {
+         delete instance;
+     }
+ 
+-    instance = new CBDInstance(_cslFilePath, _binaryToFuzzPathRadical, _timeToFuzzAWildcard, _maxSequencesDepth, _initialFuzzingSeedsPath, _binaryToFuzzArgs, _numberOfConcurrentThreads, _optionsManager, _initialSeedsPath, _iterationNumber, _iterativeModeStrategiesBalancingMode);
++    instance = new CBDInstance(_cslFilePath, _binaryToFuzzPathRadical, _timeToFuzzAWildcard, _maxSequencesDepth, _initialFuzzingSeedsPath, _binaryToFuzzArgs, _numberOfConcurrentThreads, _optionsManager, _initialSeedsPath, _gotWildcardsPath, _iterationNumber, _iterativeModeStrategiesBalancingMode);
+ 
+     return *instance;
+ }
+@@ -407,6 +409,11 @@ const std::string& CBDInstance::getInitialSeedsPath() const
+     return this->initialSeedsPath.value();
+ }
+ 
++const std::string& CBDInstance::getGotWildcardsPath() const
++{
++    return this->gotWildcardsPath.value();
++}
++
+ int CBDInstance::getIterationNumber() const
+ {
+     return this->iterationNumber.value();
+diff --git a/src/kernel/cbd_options_manager.cpp b/src/kernel/cbd_options_manager.cpp
+index 05e559e..9de1b5c 100644
+--- a/src/kernel/cbd_options_manager.cpp
++++ b/src/kernel/cbd_options_manager.cpp
+@@ -66,12 +66,14 @@ void CBDOptionsManager::buildOptions(std::string options)
+             CBDOptionsManager::Options::FUZZING_MODE_FULL,
+             CBDOptionsManager::Options::FUZZING_OPTION_TEXT_ONLY,
+             CBDOptionsManager::Options::SUPPOSED_THAT_AFL_SYSTEM_OPTIMIZATIONS_ARE_ALREADY_ENABLED,
++            CBDOptionsManager::Options::CUSTOM_FUZZING_TIME_PER_FUZZING_SESSION,
+             CBDOptionsManager::Options::ORACLE_TESTING_AFTER_EACH_STAGE,
+             CBDOptionsManager::Options::BEST_EFFORT_BY_TIMEOUT,
+             CBDOptionsManager::Options::FUZZING_MODE_STANDARD_ONLY,
+             CBDOptionsManager::Options::ITERATIVE_MODE,
+             CBDOptionsManager::Options::ITERATIVE_MODE_STRATEGIES_BALANCING,
+             CBDOptionsManager::Options::DISCARD_TRIVIAL_ADVERSARIAL_SEQUENCES,
++            CBDOptionsManager::Options::ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE,
+             CBDOptionsManager::Options::REMOVE_ALTREADY_TREATED_CONCRETE_INPUTS_BEFORE_ORACLE>::isValid(optionsCStr[i]) == true)
+         {
+             this->definedOptions.push_back(CBDOptionsManager::Options(optionsCStr[i]));
+@@ -158,6 +160,10 @@ std::pair<bool, std::optional<std::pair<CBDOptionsManager::Options, CBDOptionsMa
+     {
+         result = resultType(false, resultSecondMemberType(Options::ITERATIVE_MODE, Options::ITERATIVE_MODE_STRATEGIES_BALANCING));
+     }
++    else if ((this->isDefined(Options::ORACLE_TESTING_AFTER_EACH_STAGE) == true) && (this->isDefined(Options::ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE) == true))
++    {
++        result = resultType(false, resultSecondMemberType(Options::ORACLE_TESTING_AFTER_EACH_STAGE, Options::ORACLE_PARALLELIZATION_BY_EXECUTING_STATIC_SEQUENCES_ORACLE_DURING_LAST_FUZZING_STAGE));
++    }
+     else if ((this->isDefined(Options::ITERATIVE_MODE) == false) && (this->isDefined(Options::REMOVE_ALTREADY_TREATED_CONCRETE_INPUTS_BEFORE_ORACLE) == true))
+     {
+         result = resultType(false, resultSecondMemberType(Options::ITERATIVE_MODE, Options::REMOVE_ALTREADY_TREATED_CONCRETE_INPUTS_BEFORE_ORACLE));
+@@ -180,6 +186,7 @@ std::string CBDOptionsManager::description()
+     result << "-S : Standard minimal fuzzing mode => Fuzz with only 1 main standard AFL++ instance" << std::endl;
+     result << "-t : Text-only fuzzing => The fuzzer will only generate text" << std::endl;
+     result << "-o : Oracle testing after each stage => The oracle will test generated sequences after each stage, and then filter out potential backdoors for next sessions." << std::endl;
++    result << "-T : Custom fuzzing time per fuzzing session -> Now, the parameter \"time_to_fuzz_a_wildcard_in_s\" has the form \"time_to_fuzz_a_wildcard_in_s_for_fuzzing_session_1,time_to_fuzz_a_wildcard_in_s_for_fuzzing_session_2,...\", so there is the same number of values as \"max_command_sequences_depth\"" << std::endl;
+     result << "-B : Best effort fuzzing by timeout -> Now, the parameter \"max_command_sequences_depth\" correspond to the fuzzing timeout. When it is reached, the current fuzzing session is stopped, and the oracle testing tries to discover backdoors in performed fuzzing sessions" << std::endl;
+     result << "    Could be used with -T to provide a custom distribution of fuzzing time per session. By default, it is uniform, but it could be a good idea to provide longer fuzzing time at the begining, and less at the end. The last value of the vector is the fuzzing time for each remaining fuzzing sessions" << std::endl;
+     result << "-i' : Iterative mode => Instead of running CBD sequentially (Phase 1, then phase 2), CBD will be re-runt n times and seeds got from iteration n - 1 will be reused by the fuzzer" << std::endl;
+diff --git a/src/stage/cbd_stage.cpp b/src/stage/cbd_stage.cpp
+index 878e718..dd25d1c 100644
+--- a/src/stage/cbd_stage.cpp
++++ b/src/stage/cbd_stage.cpp
+@@ -155,7 +155,14 @@ void CBDStage::runStage()
+ 
+     this->log("Wildcard inversion");
+ 
+-    this->fuzzingInputGenerationSession->mergeProducedSeeds();
++    this->fuzzingInputGenerationSession->applyWildcardsOfResultsOfFinishedFuzzingRuns();
++
++    if (this->isFinal == true)
++    {
++        this->log("Generating SHA256 sums of generated concrete files");
++
++        this->generateSHA256SumsOfGeneratedConcreteInputs();
++    }
+ 
+     this->log("End of stage !");
+ }
+@@ -168,6 +175,12 @@ void CBDStage::stopStage()
+         this->fuzzingInputGenerationSession->run();
+         this->finishedFuzzingRuns = true;
+     }
++
++    if (this->reversedWildcardsOfResultsOfFinishedFuzzingRuns == false)
++    {
++        this->log("Wildcard inversion");
++        this->fuzzingInputGenerationSession->applyWildcardsOfResultsOfFinishedFuzzingRuns();
++    }
+ }
+ 
+ std::string CBDStage::getGeneratedSequencesPath() const

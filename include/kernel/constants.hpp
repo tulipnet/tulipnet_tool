@@ -1,0 +1,32 @@
+#ifndef CONSTANTS_HPP
+#define CONSTANTS_HPP
+
+#define OUTPUT_DIR                                                           "./output"
+#define OUTPUT_DIR_CSL                                                       OUTPUT_DIR "/csl"
+#define CSLPROCESS_V2_ADVERSARIAL_SEQUENCES_DIR                              OUTPUT_DIR_CSL "/adversarial_sequences"
+#define CSLPROCESS_V2_ALL_COMMANDS_DIR                                       OUTPUT_DIR_CSL "/all_commands"
+#define CSLPROCESS_V2_AUTOMATON                                              OUTPUT_DIR_CSL "/automaton"
+#define CSLPROCESS_V2_SEEDS_DIR                                              OUTPUT_DIR_CSL "/seeds"
+#define CSLPROCESS_V2_SEEDS_PER_COMMANDS_DIR                                 OUTPUT_DIR_CSL "/seeds_per_commands"
+#define OUTPUT_DIR_FUZZING_RESULTS                                           OUTPUT_DIR "/afl"
+#define OUTPUT_DIR_STATIC_RESULTS                                            OUTPUT_DIR "/static"
+#define OUTPUT_DIR_SYSCALLS                                                  OUTPUT_DIR "/syscalls"
+#define OUTPUT_DIR_SYSCALL_MONITOR                                           OUTPUT_DIR "/syscall_monitor"
+#define OUTPUT_DIR_NEXT_COMMAND_SEQUENCES                                    OUTPUT_DIR "/next_command_sequences"
+#define OUTPUT_DIR_POTENTIAL_BACKDOORS                                       OUTPUT_DIR "/potential_backdoors"
+#define OUTPUT_DIR_APPLY_WILDCARD                                            OUTPUT_DIR "/apply_wildcard"
+#define OUTPUT_DIR_INITIAL_SEEDS                                             OUTPUT_DIR "/seeds"
+#define OUTPUT_DIR_GENERATED_WILDCARDS                                       OUTPUT_DIR "/wildcards"
+#define CSLPROCESS_V2_EXECUTABLE_PATH                                        "/usr/local/bin/cslprocess"
+#define APPLY_WILDCARD_EXECUTABLE_PATH                                       "/usr/local/bin/apply_wildcard"
+#define PUT_CONCRETE_DATA_ON_2ND_AND_NEXT_WILDCARDS_EXECUTABLE_PATH          "/usr/local/bin/put_concrete_data_on_2nd_and_next_wildcards"
+#define CONCRETIZE_WILDCARD_EXECUTABLE_PATH                                  "/usr/local/bin/concretize_wildcard"
+#define SCRIPTS_PATH                                                         "./scripts"
+#define AFL_FUZZ_SYSTEM_OPTIMIZATION_SCRIPT_PATH                             SCRIPTS_PATH "/afl-fuzz_preparation.sh"
+#define DEFAULT_CONCRETE_VALUE                                               "aaaaa"
+#define PRELOAD_ENV                                                          "CBD_PRELOAD"
+#define ALREADY_TREATED_CONCRETE_INPUTS_SHA256_SUMS_PATH_ENV                 "CBD_ALREADY_TREATED_CONCRETE_INPUTS_SHA256_SUMS_PATH"
+#define CBD_DICTIONARY_ENV                                                   "CBD_DICTIONARY"
+#define CSLPROCESS_STUFF_ENV                                                 "CBD_CSLPROCESS_STUFF"
+
+#endif
